@@ -1,0 +1,50 @@
+const pool = require("../../config/dbPool");
+const format = require('pg-format');
+const cache = require('../utility/cache');
+
+exports.list_claims = async (query) => {
+    const response = await pool.query(query);
+    return response.rows;
+  };
+
+  // search by id
+
+  exports.progressactivitybyClaimId = async (claimIdList) => {
+    const query=format(`SELECT clga.claimprogressactivityid,clga.claimid,sfg.fieldsubtype AS claimprogressstatus,clga.datetime,clga.batchid,
+      sfg.sequence,sfg.fieldsubtype as activitytype from claimprogressactivity clga INNER JOIN systemfields sfg ON sfg.systemfieldid= clga.type where clga.claimid in (%L)`, claimIdList);
+    const {rows}=await pool.query(query)
+    return rows;
+  };
+
+
+
+  exports.list_comments_byClaimId = async (claimIdList) => {
+    const query=format(`SELECT claimid,cli.clientid,cn.noteid,cn.comment,cn.type, cn.createddate, 
+    CASE WHEN cli.entitytype='Individual' THEN COALESCE(cli.fullname,CONCAT(cli.firstname,' ',cli.lastname)) ELSE cli.companyname END "user"
+     FROM claimnote cn LEFT join users usr on usr.userid=cn.createdby LEFT  join clients cli on cli.clientid = usr.clientid where cn.isclient = false and claimid in (%L) ORDER BY cn.createddate desc`,claimIdList);
+     const {rows}=await pool.query(query)
+    return rows;
+  }
+
+  exports.list_reports_byClaimId = async (claimIdList) => {
+    const query=format(`SELECT doc.documentid,doc.claimid,doc.description,doc.documenttype,doc.documentname,doc.file,
+    doc.createddate,doc."source",doc.rejectreason,doc.createdby,doc.isclient,doc.actionby,doc.actionby,doc."status",
+    sf.systemfieldid,sf.fieldname,sf.fieldsubtype
+     FROM document doc left JOIN systemfields sf ON doc."status" = sf.systemfieldid where claimid in (%L)`,claimIdList);
+     const {rows}=await pool.query(query)
+    return rows;
+  }
+
+  exports.list_invoices_byClaimId = async (claimIdList) => {
+    const query=format(`SELECT invoiceid,invoicenumber,claimid,notes,createddate,modifieddate,reviewedby,
+    approvedby,rejectedby,paymentstatus FROM invoicesummary where claimid in (%L) and approvedby IS not null`,claimIdList);
+    const {rows}=await pool.query(query)
+    return rows;
+  }
+
+
+  exports.list_notes_byClaimId = async (claimIdList) => {
+    const query=format(`SELECT claimid,cli.clientid,cn.noteid,cn.comment,cn.type,cn.createddate, CASE WHEN cli.entitytype='Individual' THEN COALESCE(cli.fullname,CONCAT(cli.firstname,' ',cli.lastname)) ELSE cli.companyname END "user" FROM claimnote cn LEFT join users usr on usr.userid=cn.createdby LEFT  join clients cli on cli.clientid = usr.clientid where cn.isclient = true and claimid in (%L) ORDER BY cn.createddate desc`,claimIdList);
+    const {rows}=await pool.query(query)
+    return rows;
+  }
