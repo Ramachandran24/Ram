@@ -1,0 +1,198 @@
+const workbench = require("../models/workbench.model");
+const {logger} = require("../../config/winstonlog");
+const _=require("lodash");
+const cache = require('../utility/cache');
+
+exports.list_claims = async (req, res, next) => {
+  try {
+    logger.info("Listing all workbench claims Req Received", {
+      username: res.locals.username,
+      reqdetails: "Workbench",
+    });
+    const {
+      examiner,
+      adjustorid,
+      clientid,
+      claimtype,
+      assignmenttype,
+      notcontacted,
+      notinspected,
+      late,
+      states,
+      ryzefilenumber,
+      claimnumber,
+      fwcvalue
+    } = req.body;
+
+    const params = {
+      examiner: examiner === undefined ? null : examiner,
+      adjustorid: adjustorid === undefined ? null : adjustorid,
+      clientid: clientid === undefined ? null : clientid,
+      claimtype,
+      assignmenttype,
+      ryzefilenumber,
+      claimnumber,
+    }; 
+
+
+
+    const { systemfields } = await cache.cachedata();
+    let claimstatus = systemfields.filter(
+      (i) => i.fieldname === 'Claim Status' && i.fieldsubtype === 'Close'
+    );
+
+    let getClosedClaim = claimstatus[0].systemfieldid;
+
+    console.time("workbench performance");
+    
+    let query = `SELECT DISTINCT cl.claimid,cc.claimclientid,cc.firstname,cc.lastname,cc.fullname,cc.claimsequence,
+    cc.isactive,cl.createdby,cl.taskassigneddate,cl.modifieddate,cl.createddate, cl.reportduedate,
+    cl.statuschangedtime,cl.claimid, cl.ryzefilenumber,cl.claimnumber,cl.policynumber,cl.clientid,
+    cl.adjustorid,cl.isdeleted,cl.claimtype, ad.address1,ad.address2,
+    DATE_PART('day', current_date - cl.createddate) as Cycletime,
+    ${
+      notcontacted
+        ? `DATE_PART('day', current_date - cl.taskassigneddate)>${notcontacted} AS notcontacteddifference,`
+        : ""
+    }
+    ${
+      notinspected
+        ? `DATE_PART('day', current_date - cpa.datetime)>${notinspected} AS notinspecteddifference,`
+        : ""
+    }
+    ${
+      late
+        ? `DATE_PART('day', cl.createddate - current_date)>${late} AS latedifference,`
+        : ""
+    }
+    ad.city,ad.state,ad.zip, 
+    cliex.firstname AS examinerfirstname, cliex.lastname AS examinerlastname, cliex.companyname AS examinercompanyname,
+    cliadj.firstname AS adjusterfirstname, cliadj.lastname AS adjusterlastname, cliadj.companyname AS adjustercompanyname,
+    cliace.firstname AS accountexecutivefirstname, cliace.lastname AS accountexecutivelastname, cliace.companyname AS accountexecutivecompanyname,
+    clicre.firstname as createdbyfirstname,clicre.lastname AS createdbylastname, clicre.companyname AS createdbycompanyname,
+    CASE WHEN cli.entitytype='Individual' 
+       THEN  COALESCE(cli.fullname,CONCAT(cli.firstname,' ',cli.lastname))	 	 
+       ELSE   cli.companyname 
+    END "clientname", clicre.fullname AS createdbyname FROM claims cl 
+    LEFT OUTER JOIN clientclaimrelations ccl ON cl.claimid =ccl.claimid 
+    LEFT OUTER JOIN claimclients cc ON ccl.claimclientid=cc.claimclientid
+    left outer JOIN claimclientaddresses ad ON ad.claimaddressid = (SELECT ccd.claimaddressid FROM claimclientaddresses ccd 
+   INNER JOIN claimclients clr ON clr.claimclientid=ccd.claimclientid 
+   INNER JOIN claimclientroles ccr ON ccr.claimclientid=clr.claimclientid
+    INNER JOIN roles r ON r.roleid=ccr.roleid AND r.rolename='Insured'
+     INNER JOIN clientclaimrelations ccrs ON ccrs.claimclientid=clr.claimclientid WHERE clr.claimsequence IS NOT NULL AND 
+     ccrs.claimid=cl.claimid ORDER BY clr.claimsequence ASC LIMIT 1)
+     ${
+      notinspected
+        ? `LEFT OUTER JOIN claimprogressactivity cpa ON cpa.claimid = cl.claimid`
+        : ""
+    } 
+     LEFT OUTER JOIN clients cli ON cli.clientid=cl.clientid
+     LEFT outer JOIN clients cliex ON cliex.clientid=cl.examiner
+     LEFT outer JOIN clients cliadj ON cliadj.clientid=cl.adjustorid
+     LEFT outer JOIN clients cliace ON cliace.clientid=cl.accountexecutive
+     LEFT OUTER JOIN users usecre ON usecre.userid=cl.createdby
+     LEFT OUTER JOIN clients clicre ON clicre.clientid=usecre.clientid
+    where cl.isdeleted=FALSE and cl.claimstatus != '${getClosedClaim}'
+   
+    ${
+      late ? `and DATE_PART('day', cl.createddate - current_date)>${late}` : ""
+    } 
+    ${
+      notinspected
+        ? `and DATE_PART('day', cl.createddate - cpa.datetime)>${notinspected}`
+        : ""
+    } 
+    ${states ? `and ad.state = '${states}'` : ""}
+    `;
+
+    for (const key in params) {
+      if (params[key] !== null) {
+        query = `${query} and cl.${key}='${params[key]}'`;
+      }
+    }
+
+    console.log(query);   
+
+   // claim progress activity
+
+    let workbench_data = await workbench.list_claims(query);    
+
+    let distinctClaimList = [];
+    workbench_data.forEach((element) => {
+      if (distinctClaimList.find((x) => x.claimid == element.claimid)) {
+        if (distinctClaimList.find((x) => x.claimid == element.claimid).length < 1) {
+          distinctClaimList.push(element);
+        }
+      } else {
+        distinctClaimList.push(element);
+      }
+    });
+
+    let claimIdList = workbench_data.map(i=>i.claimid);
+    let finaldataset=[];
+    
+    if (claimIdList.length) {
+      let raw_claimprogressdataset = await workbench.progressactivitybyClaimId(
+        claimIdList
+      );
+      let claimnotes = await workbench.list_notes_byClaimId(claimIdList);
+      let claimcomments = await workbench.list_comments_byClaimId(claimIdList);
+      let claimreports = await workbench.list_reports_byClaimId(claimIdList);
+      let claiminvoices = await workbench.list_invoices_byClaimId(claimIdList);
+
+      function claimprogressmapping(item) {
+        claimprogressactivitydataset = raw_claimprogressdataset.filter(
+          (i) => i.claimid === item.claimid
+        );
+        const activebatchid = _.maxBy(
+          claimprogressactivitydataset,
+          "batchid"
+        ).batchid;
+        claimprogressactivitydataset = claimprogressactivitydataset.filter(
+          (i) => i.batchid === activebatchid
+        );
+        item.claimprogressactivitydataset = claimprogressactivitydataset;
+        let temp_claimnotes = claimnotes.filter(
+          (i) => i.claimid === item.claimid
+        );
+        let temp_claimcomments = claimcomments.filter(
+          (i) => i.claimid === item.claimid
+        );
+        let temp_claimreports = claimreports.filter(
+          (i) => i.claimid === item.claimid
+        );
+        let temp_claiminvoices = claiminvoices.filter(
+          (i) => i.claimid === item.claimid
+        );
+        item.claimnotes = temp_claimnotes;
+        item.claimcomments = temp_claimcomments;
+        item.claimreports = temp_claimreports;
+        item.claiminvoices = temp_claiminvoices;
+        return item;
+      }
+      finaldataset = distinctClaimList.map(claimprogressmapping);
+     
+      finaldataset = finaldataset.filter(i => (i.claimprogressactivitydataset.some(j => j.activitytype === 'FWC Date')))
+      console.log(finaldataset);
+    } else {
+      finaldataset = distinctClaimList;
+    }
+
+    console.timeEnd("workbench performance");
+
+    console.log(finaldataset.length);
+    
+    res.status(201).json({
+      message: "workbench claims Listed Sucessfully",
+      data: finaldataset,
+      status: true,
+    });
+    logger.info("workbench claims Listed Sucessfully", {
+      username: res.locals.username,
+      reqdetails: "Workbench",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
